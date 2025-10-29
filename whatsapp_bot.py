@@ -1,0 +1,631 @@
+import os
+import json
+import time
+import re
+import logging
+from flask import Flask, request, jsonify
+import requests
+from dotenv import load_dotenv
+import gspread
+from google.oauth2.service_account import Credentials
+
+load_dotenv()
+
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# ===== ENVIRONMENT VARIABLES =====
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
+WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "brookstone_verify_token_2024")
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Brookstone Leads")
+BROCHURE_MEDIA_ID = os.getenv("BROCHURE_MEDIA_ID", "1562506805130847")
+
+# ===== LOAD FAQ DATA =====
+def load_faq_data():
+    """Load FAQ data from JSON files for both languages"""
+    data = {}
+    try:
+        with open('faq_data_english.json', 'r', encoding='utf-8') as f:
+            data['english'] = json.load(f)
+    except Exception as e:
+        logging.error(f"Error loading English FAQ: {e}")
+        data['english'] = {}
+    
+    try:
+        with open('faq_data_gujarati.json', 'r', encoding='utf-8') as f:
+            data['gujarati'] = json.load(f)
+    except Exception as e:
+        logging.error(f"Error loading Gujarati FAQ: {e}")
+        data['gujarati'] = {}
+    
+    return data
+
+FAQ_DATA = load_faq_data()
+
+# ===== IN-MEMORY CONVERSATION STATE =====
+# For production, use Redis or a database
+CONV_STATE = {}
+
+# ===== LANGUAGE DETECTION =====
+def detect_language(text):
+    """Detect if text contains Gujarati characters"""
+    # Gujarati Unicode range: U+0A80 to U+0AFF
+    gujarati_chars = sum(1 for char in text if '\u0A80' <= char <= '\u0AFF')
+    # If more than 20% of characters are Gujarati, consider it Gujarati
+    if len(text) > 0 and gujarati_chars / len(text) > 0.2:
+        return 'gujarati'
+    return 'english'
+
+# ===== WHATSAPP API FUNCTIONS =====
+def send_whatsapp_text(to_phone, message):
+    """Send a text message via WhatsApp Cloud API"""
+    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "text",
+        "text": {"body": message}
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        if response.status_code == 200:
+            logging.info(f"✅ Message sent to {to_phone}")
+            return True
+        else:
+            logging.error(f"❌ Failed to send message: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Error sending message: {e}")
+        return False
+
+
+def send_whatsapp_document(to_phone, document_id, caption="Here is your Brookstone Brochure 📄"):
+    """Send WhatsApp document (PDF brochure) using Facebook Graph API"""
+    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "document",
+        "document": {
+            "id": document_id,
+            "caption": caption,
+            "filename": "Brookstone.pdf"
+        }
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        if response.status_code == 200:
+            logging.info(f"✅ Document sent to {to_phone}")
+            return True
+        else:
+            logging.error(f"❌ Failed to send document: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Error sending document: {e}")
+        return False
+
+
+def mark_message_as_read(message_id):
+    """Mark a WhatsApp message as read"""
+    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id
+    }
+    
+    try:
+        requests.post(url, headers=headers, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"Error marking message as read: {e}")
+
+
+# ===== GOOGLE SHEETS FUNCTIONS =====
+def save_to_google_sheets(name, phone, date, time_slot):
+    """Save user booking data to Google Sheets"""
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
+        client = gspread.authorize(creds)
+        
+        sheet = client.open(GOOGLE_SHEET_NAME).sheet1
+        sheet.append_row([name, phone, str(date), time_slot, ""])
+        
+        logging.info(f"✅ Booking saved to Google Sheets: {name}, {phone}")
+        return True
+    except Exception as e:
+        logging.error(f"Error saving to Google Sheets: {e}")
+        return False
+
+
+def update_budget_in_sheet(phone, budget):
+    """Update budget for existing lead in Google Sheets"""
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
+        client = gspread.authorize(creds)
+        
+        sheet = client.open(GOOGLE_SHEET_NAME).sheet1
+        records = sheet.get_all_records()
+        
+        for i, record in enumerate(records):
+            if str(record.get('Phone', '')) == str(phone):
+                sheet.update_cell(i + 2, 5, budget)
+                logging.info(f"✅ Budget updated for {phone}: {budget}")
+                return True
+        
+        return False
+    except Exception as e:
+        logging.error(f"Error updating budget: {e}")
+        return False
+
+
+def extract_budget_from_text(text):
+    """Extract budget information from user text"""
+    patterns = [
+        r'(\d+\.?\d*)\s*(?:cr|crore|crores)',
+        r'(\d+\.?\d*)\s*(?:lakh|lakhs)',
+        r'₹\s*(\d+\.?\d*)\s*(?:cr|crore|crores)',
+        r'₹\s*(\d+\.?\d*)\s*(?:lakh|lakhs)',
+    ]
+    
+    text_lower = text.lower()
+    
+    for pattern in patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            amount = float(match.group(1))
+            if 'cr' in pattern or 'crore' in pattern:
+                return f"{amount} Cr"
+            elif 'lakh' in pattern:
+                return f"{amount} Lakh"
+    
+    return None
+
+
+# ===== GEMINI AI LOGIC (from appq_gemini.py) =====
+def extract_relevant_data(user_question, faq_data, language='english'):
+    """Extract only relevant data based on user question to reduce API payload"""
+    lang_data = faq_data.get(language, faq_data.get('english', {}))
+    relevant_data = {}
+    user_question_lower = user_question.lower()
+    
+    # Always include basic project info
+    if 'project_info' in lang_data:
+        relevant_data['project_info'] = lang_data['project_info']
+    
+    # Check for various topics
+    if any(word in user_question_lower for word in ['price', 'cost', 'bhk', 'bedroom', 'size', 'sqft', 'configuration', 'apartment']):
+        if 'unit_configurations' in lang_data:
+            relevant_data['unit_configurations'] = lang_data['unit_configurations']
+        if 'pricing' in lang_data:
+            relevant_data['pricing'] = lang_data['pricing']
+    
+    if any(word in user_question_lower for word in ['kitchen', 'room', 'bedroom', 'living', 'dining', 'bathroom', 'toilet', 'balcony']):
+        if '3bhk_unit_plan' in lang_data:
+            relevant_data['3bhk_unit_plan'] = lang_data['3bhk_unit_plan']
+        if '4bhk_unit_plan' in lang_data:
+            relevant_data['4bhk_unit_plan'] = lang_data['4bhk_unit_plan']
+    
+    if any(word in user_question_lower for word in ['amenity', 'amenities', 'facility', 'gym', 'pool', 'park', 'club']):
+        if 'amenities' in lang_data:
+            relevant_data['amenities'] = lang_data['amenities']
+    
+    if any(word in user_question_lower for word in ['location', 'address', 'connectivity', 'metro', 'nearby', 'landmark']):
+        if 'location_details' in lang_data:
+            relevant_data['location_details'] = lang_data['location_details']
+    
+    if any(word in user_question_lower for word in ['possession', 'ready', 'completion', 'timeline', 'delivery']):
+        if 'possession_details' in lang_data:
+            relevant_data['possession_details'] = lang_data['possession_details']
+    
+    if any(word in user_question_lower for word in ['developer', 'shatranj', 'aarat', 'group', 'company', 'builder']):
+        if 'developer_portfolio' in lang_data:
+            relevant_data['developer_portfolio'] = lang_data['developer_portfolio']
+    
+    # If minimal data, add more sections
+    if len(relevant_data) <= 2:
+        for section in ['unit_configurations', 'pricing', '3bhk_unit_plan', '4bhk_unit_plan', 'amenities', 'location_details']:
+            if section in lang_data:
+                relevant_data[section] = lang_data[section]
+    
+    return relevant_data
+
+
+def create_gemini_prompt(user_question, faq_data, language='english', chat_history=None):
+    """Create an optimized prompt for Gemini with only relevant data and conversation context"""
+    relevant_data = extract_relevant_data(user_question, faq_data, language)
+    
+    # Build conversation context
+    conversation_context = ""
+    if chat_history and len(chat_history) > 0:
+        recent_history = chat_history[-4:] if len(chat_history) > 4 else chat_history
+        conversation_context = "\n\nRECENT CONVERSATION:\n"
+        for msg, is_user in recent_history:
+            role = "User" if is_user else "Bot"
+            conversation_context += f"{role}: {msg}\n"
+    
+    prompt = f"""
+You are a helpful real estate chatbot for the Brookstone project. Answer user questions based on the provided project data and conversation context.
+
+PROJECT DATA:
+{json.dumps(relevant_data, indent=2)}{conversation_context}
+
+USER QUESTION: {user_question}
+
+INSTRUCTIONS:
+1. ALWAYS use the PROJECT DATA provided above to answer questions
+2. Consider the RECENT CONVERSATION context - if user says "yes", "sure", "please", they are responding to your previous question
+3. If any detail shows "TBD", say "This detail is yet to be finalized"
+4. Keep responses concise but comprehensive (max 1000 characters for WhatsApp)
+5. Possession is May 2027
+6. After answering, ask 1 natural follow-up question to keep conversation going
+7. Be conversational and friendly like a real sales agent
+8. NEVER suggest WhatsApp links - only provide phone numbers
+9. For agent contact, ONLY provide phone number +91 1234567890
+10. Format your response for WhatsApp - use emojis and clear structure
+
+ANSWER:"""
+    
+    return prompt
+
+
+def call_gemini_api(prompt, language='english'):
+    """Call Google Gemini API with retry logic"""
+    if not GEMINI_API_KEY:
+        return "⚠️ Please configure your Gemini API key"
+    
+    headers = {'Content-Type': 'application/json'}
+    data = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 800
+        }
+    }
+    
+    for attempt in range(2):
+        try:
+            if attempt > 0:
+                time.sleep(2)
+            
+            response = requests.post(
+                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'candidates' in result and len(result['candidates']) > 0:
+                    candidate = result['candidates'][0]
+                    if 'content' in candidate and 'parts' in candidate['content']:
+                        return candidate['content']['parts'][0]['text']
+            
+            logging.warning(f"Gemini API error: {response.status_code}")
+                    
+        except Exception as e:
+            logging.error(f"Gemini API exception: {e}")
+            continue
+    
+    return "Sorry, I'm having trouble answering right now. Please try again or contact our agent at +91 1234567890."
+
+
+# ===== MESSAGE PROCESSING LOGIC =====
+def process_incoming_message(from_phone, message_text, message_id):
+    """Process incoming WhatsApp message and generate response"""
+    
+    # Get or create user state
+    if from_phone not in CONV_STATE:
+        CONV_STATE[from_phone] = {
+            'chat_history': [],
+            'lead_capture_mode': None,
+            'user_phone': from_phone,
+            'language': 'english',
+            'asked_about_brochure': False,
+            'booking_info': {}
+        }
+    
+    state = CONV_STATE[from_phone]
+    user_lower = message_text.lower().strip()
+    
+    # Detect language from user's message
+    detected_lang = detect_language(message_text)
+    state['language'] = detected_lang  # Update user's preferred language
+    
+    # Add user message to history
+    state['chat_history'].append((message_text, True))
+    
+    # ===== HANDLE PHONE NUMBER FOR BROCHURE =====
+    if state.get('lead_capture_mode') == 'phone_for_brochure':
+        phone_pattern = r'\b(?:\+91[\s-]?)?[6-9]\d{9}\b'
+        phone_match = re.search(phone_pattern, message_text)
+        
+        if phone_match:
+            phone_number = phone_match.group().replace(' ', '').replace('-', '')
+            state['user_phone'] = phone_number
+            state['lead_capture_mode'] = None
+            
+            success = send_whatsapp_document(phone_number, BROCHURE_MEDIA_ID)
+            
+            if success:
+                reply = """✅ *Perfect! I've sent the brochure to your WhatsApp!* 📱
+
+You should receive the BROOKSTONE project brochure within a few seconds with complete details about floor plans, amenities, pricing, and location.
+
+Feel free to review it and let me know if you have any questions! How else can I assist you? 🏠"""
+            else:
+                reply = """I apologize, but there was an issue sending the brochure to your WhatsApp. 
+
+Please try again later or contact our agent directly at +91 1234567890."""
+            
+            state['chat_history'].append((reply, False))
+            return reply
+        else:
+            reply = """I didn't find a valid phone number. Please share your *10-digit mobile number* to send the brochure.
+
+For example: 9876543210 or +91 9876543210"""
+            state['chat_history'].append((reply, False))
+            return reply
+    
+    # ===== DETECT BROCHURE REQUEST =====
+    brochure_keywords = ['brochure', 'pdf', 'download', 'send brochure', 'share brochure', 'floor plan', 'send pdf']
+    if any(kw in user_lower for kw in brochure_keywords):
+        state['asked_about_brochure'] = True
+        
+        # Send brochure directly to the phone number that messaged us
+        success = send_whatsapp_document(from_phone, BROCHURE_MEDIA_ID)
+        
+        if success:
+            reply = """✅ *Perfect! The Brookstone brochure has been sent to your WhatsApp!* 📱
+
+You'll receive it shortly with complete details on floor plans, pricing, and amenities.
+How else can I assist you? 🏠"""
+        else:
+            reply = """I apologize, but there was an issue sending the brochure.
+
+Please contact our agent at +91 1234567890 for assistance."""
+        
+        state['chat_history'].append((reply, False))
+        return reply
+    
+    # ===== HANDLE AFFIRMATIVE RESPONSE TO BROCHURE =====
+    if state.get('asked_about_brochure', False):
+        state['asked_about_brochure'] = False
+        
+        affirmative_patterns = ['yes', 'yeah', 'yup', 'sure', 'ok', 'okay', 'please', 'send', 'want', 'need']
+        
+        if any(a in user_lower for a in affirmative_patterns):
+            success = send_whatsapp_document(from_phone, BROCHURE_MEDIA_ID)
+            
+            if success:
+                reply = """✅ *Perfect! The Brookstone brochure has been sent to your WhatsApp!* 📱
+
+You'll receive it shortly with complete details on floor plans, pricing, and amenities.
+How else can I assist you? 🏠"""
+            else:
+                reply = """❌ There was an issue sending your brochure on WhatsApp.
+Please contact our agent at +91 1234567890."""
+            
+            state['chat_history'].append((reply, False))
+            return reply
+    
+    # ===== HANDLE WHATSAPP CONTACT REQUEST =====
+    contact_patterns = ['whatsapp chat', 'whatsapp number', 'agent whatsapp', 'contact agent', 'agent contact', 'talk to agent']
+    
+    if any(phrase in user_lower for phrase in contact_patterns):
+        reply = f"""Great! You can reach our agent, Shatranj, directly on WhatsApp at:
+
+📱 *WhatsApp Number:* +91 1234567890
+
+Our team will respond within 30 minutes during office hours (10 AM - 7 PM).
+
+You can also call on the same number for a phone conversation.
+
+Is there anything else about Brookstone I can help you with? 🏠"""
+        
+        state['chat_history'].append((reply, False))
+        return reply
+    
+    # ===== HANDLE SITE VISIT BOOKING =====
+    booking_keywords = ['book site visit', 'schedule visit', 'site visit', 'book appointment', 'visit booking']
+    
+    if any(kw in user_lower for kw in booking_keywords):
+        reply = """📅 *Site Visit Booking*
+
+I'd be happy to help you book a site visit!
+
+Please provide the following details:
+1️⃣ Your Name
+2️⃣ Preferred Date (e.g., Nov 5, 2025)
+3️⃣ Preferred Time (e.g., 11 AM)
+
+You can send all details in one message like:
+"John Doe, Nov 5, 11 AM"
+
+Looking forward to showing you Brookstone! 🏠"""
+        
+        state['lead_capture_mode'] = 'booking'
+        state['chat_history'].append((reply, False))
+        return reply
+    
+    # ===== HANDLE BOOKING INFO SUBMISSION =====
+    if state.get('lead_capture_mode') == 'booking':
+        # Try to extract name, date, time
+        # Simple pattern - expect "Name, Date, Time"
+        parts = [p.strip() for p in message_text.split(',')]
+        
+        if len(parts) >= 3:
+            name = parts[0]
+            date = parts[1]
+            time_slot = parts[2]
+            
+            # Save to Google Sheets
+            save_to_google_sheets(name, from_phone, date, time_slot)
+            
+            state['booking_info'] = {
+                'name': name,
+                'date': date,
+                'time': time_slot
+            }
+            state['lead_capture_mode'] = None
+            
+            reply = f"""🎉 *Congratulations!* Your site visit has been successfully booked!
+
+📋 *Booking Details:*
+• *Name:* {name}
+• *Date:* {date}
+• *Time:* {time_slot}
+
+📍 *Location:*
+Brookstone Show Flat
+B/S, Vaikunth Bungalows, Next to Oxygen Park
+DPS-Bopal Road, Shilaj, Ahmedabad - 380059
+
+Our team will confirm your appointment shortly. Thank you for choosing Brookstone! 🏠
+
+Are you looking for a 3BHK or 4BHK apartment?"""
+            
+            state['chat_history'].append((reply, False))
+            return reply
+        else:
+            reply = """Please provide all details in this format:
+*Name, Date, Time*
+
+Example: John Doe, Nov 5 2025, 11 AM"""
+            state['chat_history'].append((reply, False))
+            return reply
+    
+    # ===== EXTRACT AND SAVE BUDGET =====
+    budget = extract_budget_from_text(message_text)
+    if budget and state.get('booking_info'):
+        update_budget_in_sheet(from_phone, budget)
+    
+    # ===== DEFAULT: USE GEMINI FOR GENERAL QUESTIONS =====
+    chat_history = state.get('chat_history', [])
+    prompt = create_gemini_prompt(message_text, FAQ_DATA, state['language'], chat_history)
+    ai_response = call_gemini_api(prompt, state['language'])
+    
+    state['chat_history'].append((ai_response, False))
+    return ai_response
+
+
+# ===== WEBHOOK ROUTES =====
+@app.route('/webhook', methods=['GET'])
+def verify_webhook():
+    """Webhook verification endpoint for Meta"""
+    mode = request.args.get('hub.mode')
+    token = request.args.get('hub.verify_token')
+    challenge = request.args.get('hub.challenge')
+    
+    logging.info(f"Webhook verification: mode={mode}, token={token}")
+    
+    if mode == 'subscribe' and token == VERIFY_TOKEN:
+        logging.info('✅ WEBHOOK VERIFIED')
+        return challenge, 200
+    else:
+        logging.warning('❌ WEBHOOK VERIFICATION FAILED')
+        return 'Forbidden', 403
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint to receive messages from WhatsApp"""
+    data = request.get_json()
+    
+    logging.info(f"Incoming webhook: {json.dumps(data, indent=2)[:500]}...")
+    
+    try:
+        # Parse WhatsApp Cloud API webhook structure
+        for entry in data.get('entry', []):
+            for change in entry.get('changes', []):
+                value = change.get('value', {})
+                
+                # Get messages
+                messages = value.get('messages', [])
+                for message in messages:
+                    from_phone = message.get('from')
+                    message_id = message.get('id')
+                    msg_type = message.get('type')
+                    
+                    text = ''
+                    
+                    if msg_type == 'text':
+                        text = message.get('text', {}).get('body', '')
+                    elif msg_type == 'button':
+                        text = message.get('button', {}).get('text', '')
+                    elif msg_type == 'interactive':
+                        interactive = message.get('interactive', {})
+                        if 'button_reply' in interactive:
+                            text = interactive['button_reply'].get('title', '')
+                        elif 'list_reply' in interactive:
+                            text = interactive['list_reply'].get('title', '')
+                    
+                    if not text:
+                        logging.warning(f"No text found in message type: {msg_type}")
+                        continue
+                    
+                    logging.info(f"📱 Message from {from_phone}: {text}")
+                    
+                    # Mark message as read
+                    mark_message_as_read(message_id)
+                    
+                    # Process the message and get response
+                    response_text = process_incoming_message(from_phone, text, message_id)
+                    
+                    # Send response back
+                    send_whatsapp_text(from_phone, response_text)
+    
+    except Exception as e:
+        logging.exception('❌ Error processing webhook')
+    
+    return jsonify({'status': 'ok'}), 200
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'whatsapp_configured': bool(WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID),
+        'gemini_configured': bool(GEMINI_API_KEY)
+    }), 200
+
+
+@app.route('/', methods=['GET'])
+def home():
+    """Home endpoint"""
+    return jsonify({
+        'message': 'Brookstone WhatsApp Bot is running!',
+        'endpoints': {
+            'webhook': '/webhook',
+            'health': '/health'
+        }
+    }), 200
+
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 5000))
+    logging.info(f"🚀 Starting Brookstone WhatsApp Bot on port {port}")
+    logging.info(f"WhatsApp configured: {bool(WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID)}")
+    logging.info(f"Gemini configured: {bool(GEMINI_API_KEY)}")
+    app.run(host='0.0.0.0', port=port, debug=False)
