@@ -1,11 +1,5 @@
-streamlit
 flask
-googletrans==4.0.0-rc1
+requests
 gspread
 google-auth
-requests
-langchain
-google-generativeai
-langchain-google-genai
 python-dotenv
-PyPDF2
