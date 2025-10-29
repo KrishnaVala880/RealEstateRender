@@ -20,7 +20,8 @@ WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "brookstone_verify_token_2024")
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Brookstone Leads")
+LEADS_SHEET_NAME = os.getenv("LEADS_SHEET_NAME", "Brookstone Leads")
+SITE_VISITS_SHEET_NAME = os.getenv("SITE_VISITS_SHEET_NAME", "Brookstone Site Visits")
 BROCHURE_MEDIA_ID = os.getenv("BROCHURE_MEDIA_ID", "1562506805130847")
 
 # ===== LOAD FAQ DATA =====
@@ -139,42 +140,52 @@ def mark_message_as_read(message_id):
 
 
 # ===== GOOGLE SHEETS FUNCTIONS =====
-def save_to_google_sheets(name, phone, date, time_slot):
-    """Save user booking data to Google Sheets"""
+def save_site_visit_booking(booking_info):
+    """Save complete site visit booking information to Google Sheets"""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
         client = gspread.authorize(creds)
         
-        sheet = client.open(GOOGLE_SHEET_NAME).sheet1
-        sheet.append_row([name, phone, str(date), time_slot, ""])
+        # Open the site visits sheet
+        sheet = client.open(SITE_VISITS_SHEET_NAME).sheet1
         
-        logging.info(f"✅ Booking saved to Google Sheets: {name}, {phone}")
+        # Check if headers exist, if not add them
+        headers = sheet.row_values(1)
+        if not headers:
+            headers = [
+                'Timestamp',
+                'Name',
+                'Phone',
+                'Visit Date',
+                'Visit Time',
+                'Unit Type',
+                'Budget',
+                'Status'
+            ]
+            sheet.insert_row(headers, 1)
+        
+        # Prepare row data
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        row_data = [
+            timestamp,
+            booking_info['name'],
+            booking_info['phone'],
+            booking_info['date'],
+            booking_info['time'],
+            booking_info['unit_type'],
+            booking_info.get('budget', ''),
+            'New'  # Initial status
+        ]
+        
+        # Append the new booking
+        sheet.append_row(row_data)
+        
+        logging.info(f"✅ Site visit booking saved to Google Sheets: {booking_info['name']}, {booking_info['phone']}")
         return True
+        
     except Exception as e:
-        logging.error(f"Error saving to Google Sheets: {e}")
-        return False
-
-
-def update_budget_in_sheet(phone, budget):
-    """Update budget for existing lead in Google Sheets"""
-    try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
-        client = gspread.authorize(creds)
-        
-        sheet = client.open(GOOGLE_SHEET_NAME).sheet1
-        records = sheet.get_all_records()
-        
-        for i, record in enumerate(records):
-            if str(record.get('Phone', '')) == str(phone):
-                sheet.update_cell(i + 2, 5, budget)
-                logging.info(f"✅ Budget updated for {phone}: {budget}")
-                return True
-        
-        return False
-    except Exception as e:
-        logging.error(f"Error updating budget: {e}")
+        logging.error(f"Error saving site visit booking to Google Sheets: {e}")
         return False
 
 
@@ -367,19 +378,14 @@ def process_incoming_message(from_phone, message_text, message_id):
             
             success = send_whatsapp_document(phone_number, BROCHURE_MEDIA_ID)
             
-            if success:
-                reply = """✅ *Perfect! I've sent the brochure to your WhatsApp!* 📱
-
-You should receive the BROOKSTONE project brochure within a few seconds with complete details about floor plans, amenities, pricing, and location.
-
-Feel free to review it and let me know if you have any questions! How else can I assist you? 🏠"""
-            else:
+            if not success:
                 reply = """I apologize, but there was an issue sending the brochure to your WhatsApp. 
 
 Please try again later or contact our agent directly at +91 1234567890."""
-            
-            state['chat_history'].append((reply, False))
-            return reply
+                state['chat_history'].append((reply, False))
+                return reply
+                
+            return None
         else:
             reply = """I didn't find a valid phone number. Please share your *10-digit mobile number* to send the brochure.
 
@@ -395,18 +401,14 @@ For example: 9876543210 or +91 9876543210"""
         # Send brochure directly to the phone number that messaged us
         success = send_whatsapp_document(from_phone, BROCHURE_MEDIA_ID)
         
-        if success:
-            reply = """✅ *Perfect! The Brookstone brochure has been sent to your WhatsApp!* 📱
-
-You'll receive it shortly with complete details on floor plans, pricing, and amenities.
-How else can I assist you? 🏠"""
-        else:
+        if not success:
             reply = """I apologize, but there was an issue sending the brochure.
 
 Please contact our agent at +91 1234567890 for assistance."""
-        
-        state['chat_history'].append((reply, False))
-        return reply
+            state['chat_history'].append((reply, False))
+            return reply
+            
+        return None
     
     # ===== HANDLE AFFIRMATIVE RESPONSE TO BROCHURE =====
     if state.get('asked_about_brochure', False):
@@ -417,17 +419,13 @@ Please contact our agent at +91 1234567890 for assistance."""
         if any(a in user_lower for a in affirmative_patterns):
             success = send_whatsapp_document(from_phone, BROCHURE_MEDIA_ID)
             
-            if success:
-                reply = """✅ *Perfect! The Brookstone brochure has been sent to your WhatsApp!* 📱
-
-You'll receive it shortly with complete details on floor plans, pricing, and amenities.
-How else can I assist you? 🏠"""
-            else:
+            if not success:
                 reply = """❌ There was an issue sending your brochure on WhatsApp.
 Please contact our agent at +91 1234567890."""
-            
-            state['chat_history'].append((reply, False))
-            return reply
+                state['chat_history'].append((reply, False))
+                return reply
+                
+            return None
     
     # ===== HANDLE WHATSAPP CONTACT REQUEST =====
     contact_patterns = ['whatsapp chat', 'whatsapp number', 'agent whatsapp', 'contact agent', 'agent contact', 'talk to agent']
@@ -450,68 +448,191 @@ Is there anything else about Brookstone I can help you with? 🏠"""
     booking_keywords = ['book site visit', 'schedule visit', 'site visit', 'book appointment', 'visit booking']
     
     if any(kw in user_lower for kw in booking_keywords):
-        reply = """📅 *Site Visit Booking*
-
-I'd be happy to help you book a site visit!
-
-Please provide the following details:
-1️⃣ Your Name
-2️⃣ Preferred Date (e.g., Nov 5, 2025)
-3️⃣ Preferred Time (e.g., 11 AM)
-
-You can send all details in one message like:
-"John Doe, Nov 5, 11 AM"
-
-Looking forward to showing you Brookstone! 🏠"""
-        
+        state['booking_info'] = {
+            'phone': from_phone,  # Auto-fill phone number
+            'current_step': 'name'
+        }
         state['lead_capture_mode'] = 'booking'
+        
+        reply = """� *Site Visit Booking Form*
+
+Let's help you schedule a site visit to Brookstone! I'll guide you through a quick form.
+
+First, please tell me your *full name*."""
+        
         state['chat_history'].append((reply, False))
         return reply
     
-    # ===== HANDLE BOOKING INFO SUBMISSION =====
+    # ===== HANDLE BOOKING FORM SUBMISSION =====
     if state.get('lead_capture_mode') == 'booking':
-        # Try to extract name, date, time
-        # Simple pattern - expect "Name, Date, Time"
-        parts = [p.strip() for p in message_text.split(',')]
+        booking_info = state['booking_info']
+        current_step = booking_info.get('current_step')
         
-        if len(parts) >= 3:
-            name = parts[0]
-            date = parts[1]
-            time_slot = parts[2]
+        if current_step == 'name':
+            booking_info['name'] = message_text
+            booking_info['current_step'] = 'confirm_phone'
             
-            # Save to Google Sheets
-            save_to_google_sheets(name, from_phone, date, time_slot)
+            reply = f"""Thank you, {message_text}! 📝
+
+I have your phone number as: *{from_phone}*
+Is this the correct number for the site visit coordination?
+
+Reply with:
+1️⃣ *Yes* to confirm this number
+2️⃣ Or type your *alternate number*"""
             
-            state['booking_info'] = {
-                'name': name,
-                'date': date,
-                'time': time_slot
+            state['chat_history'].append((reply, False))
+            return reply
+            
+        elif current_step == 'confirm_phone':
+            if user_lower == 'yes' or user_lower == '1':
+                phone = booking_info['phone']
+            else:
+                # Check if valid phone number provided
+                phone_pattern = r'\b(?:\+91[\s-]?)?[6-9]\d{9}\b'
+                phone_match = re.search(phone_pattern, message_text)
+                if phone_match:
+                    phone = phone_match.group().replace(' ', '').replace('-', '')
+                else:
+                    reply = """Please provide a valid 10-digit phone number or type *Yes* to confirm the existing number.
+
+Example: 9876543210 or +91 9876543210"""
+                    state['chat_history'].append((reply, False))
+                    return reply
+            
+            booking_info['phone'] = phone
+            booking_info['current_step'] = 'date'
+            
+            reply = """Great! Now, please tell me your *preferred date* for the site visit.
+
+Format: DD/MM/YYYY
+Example: 05/11/2025"""
+            
+            state['chat_history'].append((reply, False))
+            return reply
+            
+        elif current_step == 'date':
+            # Basic date validation
+            date_pattern = r'\d{1,2}[/-]\d{1,2}[/-]\d{4}'
+            if not re.match(date_pattern, message_text):
+                reply = """Please provide the date in the correct format (DD/MM/YYYY).
+
+Example: 05/11/2025"""
+                state['chat_history'].append((reply, False))
+                return reply
+            
+            booking_info['date'] = message_text
+            booking_info['current_step'] = 'time'
+            
+            reply = """Perfect! Now, please select your *preferred time* for the site visit.
+
+Available slots:
+1️⃣ 10:00 AM
+2️⃣ 11:30 AM
+3️⃣ 02:00 PM
+4️⃣ 03:30 PM
+5️⃣ 05:00 PM
+
+Reply with the slot number (1-5) or type the time."""
+            
+            state['chat_history'].append((reply, False))
+            return reply
+            
+        elif current_step == 'time':
+            time_slots = {
+                '1': '10:00 AM',
+                '2': '11:30 AM',
+                '3': '02:00 PM',
+                '4': '03:30 PM',
+                '5': '05:00 PM'
             }
+            
+            if message_text in time_slots:
+                time_slot = time_slots[message_text]
+            else:
+                time_slot = message_text
+            
+            booking_info['time'] = time_slot
+            booking_info['current_step'] = 'unit_type'
+            
+            reply = """Excellent! Which unit type are you interested in?
+
+1️⃣ *3 BHK* (2650 sq ft)
+2️⃣ *4 BHK* (3850 sq ft)
+3️⃣ *Both options*
+
+Please reply with 1, 2, or 3."""
+            
+            state['chat_history'].append((reply, False))
+            return reply
+            
+        elif current_step == 'unit_type':
+            unit_types = {
+                '1': '3 BHK',
+                '2': '4 BHK',
+                '3': 'Both 3 & 4 BHK'
+            }
+            
+            if message_text not in ['1', '2', '3']:
+                reply = """Please select a valid option:
+1️⃣ for 3 BHK
+2️⃣ for 4 BHK
+3️⃣ for Both options"""
+                state['chat_history'].append((reply, False))
+                return reply
+            
+            booking_info['unit_type'] = unit_types[message_text]
+            booking_info['current_step'] = 'budget'
+            
+            reply = """Almost done! 🎯
+
+What is your *approximate budget*?
+
+Example formats:
+• 1.5 Cr
+• 2 Crore
+• 150 Lakhs"""
+            
+            state['chat_history'].append((reply, False))
+            return reply
+            
+        elif current_step == 'budget':
+            budget = extract_budget_from_text(message_text)
+            if not budget:
+                reply = """Please specify your budget in a clear format:
+Example: 1.5 Cr, 2 Crore, or 150 Lakhs"""
+                state['chat_history'].append((reply, False))
+                return reply
+            
+            booking_info['budget'] = budget
+            
+            # Save all information to Google Sheets
+            save_site_visit_booking(booking_info)
+            
+            # Clear booking mode
             state['lead_capture_mode'] = None
             
-            reply = f"""🎉 *Congratulations!* Your site visit has been successfully booked!
+            # Send confirmation
+            reply = f"""🎉 *Booking Confirmed!*
 
-📋 *Booking Details:*
-• *Name:* {name}
-• *Date:* {date}
-• *Time:* {time_slot}
+📋 *Your Site Visit Details:*
+• *Name:* {booking_info['name']}
+• *Phone:* {booking_info['phone']}
+• *Date:* {booking_info['date']}
+• *Time:* {booking_info['time']}
+• *Unit Interest:* {booking_info['unit_type']}
+• *Budget:* {booking_info['budget']}
 
 📍 *Location:*
 Brookstone Show Flat
 B/S, Vaikunth Bungalows, Next to Oxygen Park
 DPS-Bopal Road, Shilaj, Ahmedabad - 380059
 
-Our team will confirm your appointment shortly. Thank you for choosing Brookstone! 🏠
+Our team will contact you shortly to confirm your appointment. Thank you for choosing Brookstone! 🏠
 
-Are you looking for a 3BHK or 4BHK apartment?"""
+Would you like to receive our project brochure? 📄"""
             
-            state['chat_history'].append((reply, False))
-            return reply
-        else:
-            reply = """Please provide all details in this format:
-*Name, Date, Time*
-
-Example: John Doe, Nov 5 2025, 11 AM"""
+            state['asked_about_brochure'] = True
             state['chat_history'].append((reply, False))
             return reply
     

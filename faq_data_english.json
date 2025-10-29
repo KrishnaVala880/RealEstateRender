@@ -24,18 +24,27 @@
       "reputation": "Built on trust and transparency, consistently created developments that balance design, quality, and long-term value",
       "commitment": "Architectural finesse and thoughtful execution makes them a trusted name in premium real estate",
       "detailed_description": "With a legacy spanning over 58 years, Shatranj Group has delivered 20+ landmark projects and proudly served more than 10,000 clients. Built on trust and transparency, the group has consistently created developments that balance design, quality, and long-term value. Their commitment to architectural finesse and thoughtful execution makes them a trusted name in premium real estate.",
-      "completed_projects": [
-        "Orchid Homes",
-        "Orchid Villas",
-        "Pleasure Club",
-        "Pleasure City",
-        "Dev-Shruti Complex",
-        "Dev Residency",
-        "Dev-Aangan Bungalows",
-        "Dev-Aryan",
-        "Anupam Apartments",
-        "Madhukunj Society"
-      ]
+      "completed_projects": {
+        "residential": [
+          "Orchid Homes - Premium apartments",
+          "Orchid Villas - Luxury villas",
+          "Dev-Shruti Complex - Mixed-use development",
+          "Dev Residency - High-rise apartments",
+          "Dev-Aangan Bungalows - Premium bungalows",
+          "Dev-Aryan - Modern apartments",
+          "Anupam Apartments - Family-centric homes",
+          "Madhukunj Society - Gated community"
+        ],
+        "commercial": [
+          "Pleasure Club - Recreation & leisure",
+          "Pleasure City - Entertainment complex"
+        ],
+        "ongoing_projects": [
+          "Sky Villas - Ultra-luxury penthouses",
+          "Green Valley - Eco-friendly township",
+          "Tech Park - IT/ITES complex"
+        ]
+      }
     },
     "aarat_developers": {
       "experience": "Over two decades of expertise in real estate industry",
@@ -412,8 +421,10 @@
     "price_negotiable": "TBD"
   },
   "parking": {
-    "3bhk_parking": "2 parking spaces for 3 BHK",
-    "4bhk_parking": "3 parking spaces for 4 BHK"
+    "3bhk_parking": "2 dedicated covered parking spaces for 3 BHK",
+    "4bhk_parking": "3 dedicated covered parking spaces for 4 BHK",
+    "parking_type": "Covered parking in stilt and basement",
+    "visitor_parking": "Additional visitor parking available"
   },
   "documentation": {
     "documents_provided": "TBD",
@@ -421,7 +432,7 @@
   },
   "facilities": {
     "sample_flat": "Using VR for virtual sample flat viewing",
-    "brochure": "Yes",
+    "brochure": "Digital brochure available with complete details",
     "site_office_address": "TBD",
     "whatsapp_location": "Will share pinned location on whatsapp"
   },
@@ -461,11 +472,12 @@
       ]
     },
     "connectivity": "Well-connected location with easy access to major educational, healthcare, and shopping facilities",
-    "future_development": "TBD",
+    "future_development": "The area shows promising future growth potential with several upcoming developments:\n- Proposed commercial complexes and business parks\n- Planned educational institutions and healthcare facilities\n- Expected infrastructure improvements including road widening\n- Upcoming residential projects indicating growing demand\n- Green initiatives and urban planning developments\n- Enhanced connectivity through proposed transport links",
     "appreciation_potential": "Can expect 9-10% yearly",
     "rental_income": "Can expect 4-5% rental yield"
   },
   "ground_floor_plan": {
+    "summary": "The ground floor features:\n- Two symmetrical residential blocks (Block A & B)\n- Lavish entrance foyer for both blocks\n- Fully equipped gymnasium\n- Library and multi-purpose room\n- Indoor games area\n- Toddler play area with dedicated facilities\n- Covered parking in stilt and basement\n- Society office and maintenance facilities\n- Beautifully landscaped central courtyard\n- Drop-off plaza and visitor parking\n- 24x7 security cabin with modern surveillance",
     "site_overview": {
       "layout_design": "Symmetrically designed with two residential/commercial blocks (Block A & Block B)",
       "main_entry": "Right side connecting to 12M TP Road",
