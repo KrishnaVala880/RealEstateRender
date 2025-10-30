@@ -8,9 +8,6 @@ import requests
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from datetime import datetime, timedelta
-import pytz
 
 load_dotenv()
 
@@ -20,124 +17,42 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ===== ENVIRONMENT VARIABLES =====
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "brookstone_verify_token_2024")
-LEADS_SHEET_NAME = os.getenv("LEADS_SHEET_NAME", "Brookstone Leads")
-SITE_VISITS_SHEET_NAME = os.getenv("SITE_VISITS_SHEET_NAME", "Brookstone Site Visits")
-BROCHURE_MEDIA_ID = os.getenv("BROCHURE_MEDIA_ID", "1562506805130847")
-
-# ===== LOAD FAQ DATA =====
-def load_faq_data():
-    """Load FAQ data from JSON files for both languages"""
-    data = {}
+def check_new_bookings():
+    """Check for new entries in the Google Sheet and send confirmation messages"""
     try:
-        with open('faq_data_english.json', 'r', encoding='utf-8') as f:
-            data['english'] = json.load(f)
-    except Exception as e:
-        logging.error(f"Error loading English FAQ: {e}")
-        data['english'] = {}
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
+        client = gspread.authorize(creds)
+        
+        # Open the site visits sheet
+        sheet = client.open(SITE_VISITS_SHEET_NAME).sheet1
+        
+        # Get all records
+        all_records = sheet.get_all_records()
+        
+        for record in all_records:
+            # Check if this is a new record that hasn't been processed
+            if record.get('Status') == 'New':
+                phone = record.get('Phone')
+                name = record.get('Name')
+                date = record.get('Preferred Date')
+                time = record.get('Preferred Time')
+                unit = record.get('Unit Type')
+                
+                if phone:
+                    # Format the confirmation message
+                    message = f"""🎉 *Site Visit Booking Confirmed!*\n\nDear {name},\n\nYour site visit to Brookstone has been scheduled:\n📅 Date: {date}\n⏰ Time: {time}\n🏠 Unit Interest: {unit}\n\n📍 *Location:*\nBrookstone Show Flat\nB/S, Vaikunth Bungalows, Next to Oxygen Park\nDPS-Bopal Road, Shilaj, Ahmedabad - 380059\n\nOur team will be ready to welcome you! \n\nNeed to reschedule? Contact us at: +91 1234567890\n\nSee you soon! 🌟"""
+
+                    # Send WhatsApp confirmation
+                    if send_whatsapp_text(phone, message):
+                        # Update status to confirmed
+                        sheet.update_cell(all_records.index(record) + 2, 8, 'Confirmed')
+        
+        return True
     
-    try:
-        with open('faq_data_gujarati.json', 'r', encoding='utf-8') as f:
-            data['gujarati'] = json.load(f)
     except Exception as e:
-        logging.error(f"Error loading Gujarati FAQ: {e}")
-        data['gujarati'] = {}
-    
-    return data
-
-FAQ_DATA = load_faq_data()
-
-# ===== IN-MEMORY CONVERSATION STATE =====
-# For production, use Redis or a database
-CONV_STATE = {}
-
-# ===== LANGUAGE DETECTION =====
-def detect_language(text):
-    """Detect if text contains Gujarati characters"""
-    # Gujarati Unicode range: U+0A80 to U+0AFF
-    gujarati_chars = sum(1 for char in text if '\u0A80' <= char <= '\u0AFF')
-    # If more than 20% of characters are Gujarati, consider it Gujarati
-    if len(text) > 0 and gujarati_chars / len(text) > 0.2:
-        return 'gujarati'
-    return 'english'
-
-# ===== WHATSAPP API FUNCTIONS =====
-def send_whatsapp_text(to_phone, message):
-    """Send a text message via WhatsApp Cloud API"""
-    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_phone,
-        "type": "text",
-        "text": {"body": message}
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        if response.status_code == 200:
-            logging.info(f"✅ Message sent to {to_phone}")
-            return True
-        else:
-            logging.error(f"❌ Failed to send message: {response.status_code} - {response.text}")
-            return False
-    except Exception as e:
-        logging.error(f"❌ Error sending message: {e}")
+        logging.error(f"Error checking new bookings: {e}")
         return False
-
-
-def send_whatsapp_document(to_phone, document_id, caption="Here is your Brookstone Brochure 📄"):
-    """Send WhatsApp document (PDF brochure) using Facebook Graph API"""
-    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_phone,
-        "type": "document",
-        "document": {
-            "id": document_id,
-            "caption": caption,
-            "filename": "Brookstone.pdf"
-        }
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        if response.status_code == 200:
-            logging.info(f"✅ Document sent to {to_phone}")
-            return True
-        else:
-            logging.error(f"❌ Failed to send document: {response.status_code} - {response.text}")
-            return False
-    except Exception as e:
-        logging.error(f"❌ Error sending document: {e}")
-        return False
-
-
-def mark_message_as_read(message_id):
-    """Mark a WhatsApp message as read"""
-    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "status": "read",
-        "message_id": message_id
-    }
-    
-    try:
-        requests.post(url, headers=headers, json=payload, timeout=10)
     except Exception as e:
         logging.error(f"Error marking message as read: {e}")
 
@@ -327,6 +242,11 @@ def extract_relevant_data(user_question, faq_data, language='english'):
             relevant_data['3bhk_unit_plan'] = lang_data['3bhk_unit_plan']
         if '4bhk_unit_plan' in lang_data:
             relevant_data['4bhk_unit_plan'] = lang_data['4bhk_unit_plan']
+
+    # Ground floor / floor plan queries
+    if any(word in user_question_lower for word in ['ground', 'ground floor', 'floor plan', 'groundfloor', 'ground-floor']):
+        if 'ground_floor_plan' in lang_data:
+            relevant_data['ground_floor_plan'] = lang_data['ground_floor_plan']
     
     if any(word in user_question_lower for word in ['amenity', 'amenities', 'facility', 'gym', 'pool', 'park', 'club']):
         if 'amenities' in lang_data:
