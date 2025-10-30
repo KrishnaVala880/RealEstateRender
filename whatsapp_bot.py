@@ -8,6 +8,9 @@ import requests
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from datetime import datetime, timedelta
+import pytz
 
 load_dotenv()
 
@@ -140,8 +143,55 @@ def mark_message_as_read(message_id):
 
 
 # ===== GOOGLE SHEETS FUNCTIONS =====
-def save_site_visit_booking(booking_info):
-    """Save complete site visit booking information to Google Sheets"""
+def add_to_calendar(name, date_str, time_str, unit_type):
+    """Add a site visit to Google Calendar"""
+    try:
+        # Parse date and time
+        date_obj = datetime.strptime(date_str, "%d/%m/%Y")
+        time_obj = datetime.strptime(time_str, "%I:%M %p")
+        
+        # Combine date and time
+        start_time = date_obj.replace(
+            hour=time_obj.hour,
+            minute=time_obj.minute,
+            tzinfo=pytz.timezone('Asia/Kolkata')
+        )
+        
+        # Event ends after 1 hour
+        end_time = start_time + timedelta(hours=1)
+        
+        # Set up calendar service
+        scopes = ['https://www.googleapis.com/auth/calendar']
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
+        service = build('calendar', 'v3', credentials=creds)
+        
+        event = {
+            'summary': f'Brookstone Site Visit - {name} ({unit_type})',
+            'location': 'Brookstone Show Flat, B/S, Vaikunth Bungalows, Next to Oxygen Park, DPS-Bopal Road, Shilaj, Ahmedabad - 380059',
+            'description': f'Site visit appointment for {name}\nUnit Interest: {unit_type}',
+            'start': {
+                'dateTime': start_time.isoformat(),
+                'timeZone': 'Asia/Kolkata',
+            },
+            'end': {
+                'dateTime': end_time.isoformat(),
+                'timeZone': 'Asia/Kolkata',
+            },
+            'reminders': {
+                'useDefault': True
+            }
+        }
+        
+        event = service.events().insert(calendarId='primary', body=event).execute()
+        logging.info(f'Calendar event created: {event.get("htmlLink")}')
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error creating calendar event: {e}")
+        return False
+
+def check_new_bookings():
+    """Check for new entries in the Google Sheet and send confirmation messages"""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
@@ -150,42 +200,53 @@ def save_site_visit_booking(booking_info):
         # Open the site visits sheet
         sheet = client.open(SITE_VISITS_SHEET_NAME).sheet1
         
-        # Check if headers exist, if not add them
-        headers = sheet.row_values(1)
-        if not headers:
-            headers = [
-                'Timestamp',
-                'Name',
-                'Phone',
-                'Visit Date',
-                'Visit Time',
-                'Unit Type',
-                'Budget',
-                'Status'
-            ]
-            sheet.insert_row(headers, 1)
+        # Get all records
+        all_records = sheet.get_all_records()
         
-        # Prepare row data
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        row_data = [
-            timestamp,
-            booking_info['name'],
-            booking_info['phone'],
-            booking_info['date'],
-            booking_info['time'],
-            booking_info['unit_type'],
-            booking_info.get('budget', ''),
-            'New'  # Initial status
-        ]
+        for record in all_records:
+            # Check if this is a new record that hasn't been processed
+            if record.get('Status') == 'New':
+                phone = record.get('Phone')
+                name = record.get('Name')
+                date = record.get('Preferred Date')
+                time = record.get('Preferred Time')
+                unit = record.get('Unit Type')
+                
+                if phone:
+                    # Add to Google Calendar
+                    calendar_added = add_to_calendar(name, date, time, unit)
+                    
+                    # Format the confirmation message
+                    message = f"""🎉 *Site Visit Booking Confirmed!*
+
+Dear {name},
+
+Your site visit to Brookstone has been scheduled:
+📅 Date: {date}
+⏰ Time: {time}
+🏠 Unit Interest: {unit}
+
+📍 *Location:*
+Brookstone Show Flat
+B/S, Vaikunth Bungalows, Next to Oxygen Park
+DPS-Bopal Road, Shilaj, Ahmedabad - 380059
+
+Our team will be ready to welcome you! 
+
+Need to reschedule? Contact us at: +91 1234567890
+
+See you soon! 🌟"""
+
+                    # Send WhatsApp confirmation
+                    if send_whatsapp_text(phone, message):
+                        # Update status to confirmed
+                        status = 'Confirmed' if calendar_added else 'Confirmed (Calendar Failed)'
+                        sheet.update_cell(all_records.index(record) + 2, 8, status)
         
-        # Append the new booking
-        sheet.append_row(row_data)
-        
-        logging.info(f"✅ Site visit booking saved to Google Sheets: {booking_info['name']}, {booking_info['phone']}")
         return True
-        
+    
     except Exception as e:
-        logging.error(f"Error saving site visit booking to Google Sheets: {e}")
+        logging.error(f"Error checking new bookings: {e}")
         return False
 
 
@@ -448,17 +509,27 @@ Is there anything else about Brookstone I can help you with? 🏠"""
     booking_keywords = ['book site visit', 'schedule visit', 'site visit', 'book appointment', 'visit booking']
     
     if any(kw in user_lower for kw in booking_keywords):
-        state['booking_info'] = {
-            'phone': from_phone,  # Auto-fill phone number
-            'current_step': 'name'
-        }
-        state['lead_capture_mode'] = 'booking'
+        google_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSceds-nIr9vTLHJ0Jl1TOv0DNYGQhb0CtEa2R3mA9Ae3iP8Lg/viewform"
         
-        reply = """� *Site Visit Booking Form*
+        reply = f"""🏠 *Book Your Site Visit to Brookstone*
 
-Let's help you schedule a site visit to Brookstone! I'll guide you through a quick form.
+To schedule your site visit, please click the link below and fill out a quick form:
 
-First, please tell me your *full name*."""
+📝 {google_form_url}
+
+The form will ask for:
+• Your Name
+• Contact Number
+• Preferred Date & Time
+• Unit Type Interest
+• Budget Range
+
+Once you submit the form, our team will confirm your appointment within 2 hours.
+
+Need help with the form? Feel free to ask! 😊"""
+        
+        state['chat_history'].append((reply, False))
+        return reply
         
         state['chat_history'].append((reply, False))
         return reply
@@ -606,31 +677,19 @@ Example: 1.5 Cr, 2 Crore, or 150 Lakhs"""
             
             booking_info['budget'] = budget
             
-            # Save all information to Google Sheets
-            save_site_visit_booking(booking_info)
+            # Since we're using Google Forms now, redirect to form
+            google_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSceds-nIr9vTLHJ0Jl1TOv0DNYGQhb0CtEa2R3mA9Ae3iP8Lg/viewform"
             
             # Clear booking mode
             state['lead_capture_mode'] = None
             
-            # Send confirmation
-            reply = f"""🎉 *Booking Confirmed!*
+            reply = f"""� To complete your booking, please fill out our site visit form:
 
-📋 *Your Site Visit Details:*
-• *Name:* {booking_info['name']}
-• *Phone:* {booking_info['phone']}
-• *Date:* {booking_info['date']}
-• *Time:* {booking_info['time']}
-• *Unit Interest:* {booking_info['unit_type']}
-• *Budget:* {booking_info['budget']}
+📝 {google_form_url}
 
-📍 *Location:*
-Brookstone Show Flat
-B/S, Vaikunth Bungalows, Next to Oxygen Park
-DPS-Bopal Road, Shilaj, Ahmedabad - 380059
+Once you submit the form, you'll receive a confirmation message with all the details.
 
-Our team will contact you shortly to confirm your appointment. Thank you for choosing Brookstone! 🏠
-
-Would you like to receive our project brochure? 📄"""
+Need help with anything else? �"""
             
             state['asked_about_brochure'] = True
             state['chat_history'].append((reply, False))
@@ -639,7 +698,9 @@ Would you like to receive our project brochure? 📄"""
     # ===== EXTRACT AND SAVE BUDGET =====
     budget = extract_budget_from_text(message_text)
     if budget and state.get('booking_info'):
-        update_budget_in_sheet(from_phone, budget)
+        # Since we're now using Google Forms to collect budget
+        # Simply log for tracking
+        logging.info(f"Budget indicated by {from_phone}: {budget}")
     
     # ===== DEFAULT: USE GEMINI FOR GENERAL QUESTIONS =====
     chat_history = state.get('chat_history', [])
