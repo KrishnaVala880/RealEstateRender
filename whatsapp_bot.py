@@ -19,125 +19,127 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-def check_new_bookings():
-    """Check for new entries in the Google Sheet and send confirmation messages"""
-    try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
-        client = gspread.authorize(creds)
-        
-        # Open the site visits sheet
-        sheet = client.open(SITE_VISITS_SHEET_NAME).sheet1
-        
-        # Get all records
-        all_records = sheet.get_all_records()
-        
-        for record in all_records:
-            # Check if this is a new record that hasn't been processed
-            if record.get('Status') == 'New':
-                phone = record.get('Phone')
-                name = record.get('Name')
-                date = record.get('Preferred Date')
-                time = record.get('Preferred Time')
-                unit = record.get('Unit Type')
-                
-                if phone:
-                    # Format the confirmation message
-                    message = f"""🎉 *Site Visit Booking Confirmed!*\n\nDear {name},\n\nYour site visit to Brookstone has been scheduled:\n📅 Date: {date}\n⏰ Time: {time}\n🏠 Unit Interest: {unit}\n\n📍 *Location:*\nBrookstone Show Flat\nB/S, Vaikunth Bungalows, Next to Oxygen Park\nDPS-Bopal Road, Shilaj, Ahmedabad - 380059\n\nOur team will be ready to welcome you! \n\nNeed to reschedule? Contact us at: +91 1234567890\n\nSee you soon! 🌟"""
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "brookstone_verify_token_2024")
+LEADS_SHEET_NAME = os.getenv("LEADS_SHEET_NAME", "Brookstone Leads")
+SITE_VISITS_SHEET_NAME = os.getenv("SITE_VISITS_SHEET_NAME", "Brookstone Site Visits")
+BROCHURE_MEDIA_ID = os.getenv("BROCHURE_MEDIA_ID", "1562506805130847")
 
-                    # Send WhatsApp confirmation
-                    if send_whatsapp_text(phone, message):
-                        # Update status to confirmed
-                        sheet.update_cell(all_records.index(record) + 2, 8, 'Confirmed')
-        
-        return True
-    
+# ===== LOAD FAQ DATA =====
+def load_faq_data():
+    """Load FAQ data from JSON files for both languages"""
+    data = {}
+    try:
+        with open('faq_data_english.json', 'r', encoding='utf-8') as f:
+            data['english'] = json.load(f)
     except Exception as e:
-        logging.error(f"Error checking new bookings: {e}")
+        logging.error(f"Error loading English FAQ: {e}")
+        data['english'] = {}
+    
+    try:
+        with open('faq_data_gujarati.json', 'r', encoding='utf-8') as f:
+            data['gujarati'] = json.load(f)
+    except Exception as e:
+        logging.error(f"Error loading Gujarati FAQ: {e}")
+        data['gujarati'] = {}
+    
+    return data
+
+FAQ_DATA = load_faq_data()
+
+# ===== IN-MEMORY CONVERSATION STATE =====
+# For production, use Redis or a database
+CONV_STATE = {}
+
+# ===== LANGUAGE DETECTION =====
+def detect_language(text):
+    """Detect if text contains Gujarati characters"""
+    # Gujarati Unicode range: U+0A80 to U+0AFF
+    gujarati_chars = sum(1 for char in text if '\u0A80' <= char <= '\u0AFF')
+    # If more than 20% of characters are Gujarati, consider it Gujarati
+    if len(text) > 0 and gujarati_chars / len(text) > 0.2:
+        return 'gujarati'
+    return 'english'
+
+# ===== WHATSAPP API FUNCTIONS =====
+def send_whatsapp_text(to_phone, message):
+    """Send a text message via WhatsApp Cloud API"""
+    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "text",
+        "text": {"body": message}
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        if response.status_code == 200:
+            logging.info(f"✅ Message sent to {to_phone}")
+            return True
+        else:
+            logging.error(f"❌ Failed to send message: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Error sending message: {e}")
         return False
+
+
+def send_whatsapp_document(to_phone, document_id, caption="Here is your Brookstone Brochure 📄"):
+    """Send WhatsApp document (PDF brochure) using Facebook Graph API"""
+    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "document",
+        "document": {
+            "id": document_id,
+            "caption": caption,
+            "filename": "Brookstone.pdf"
+        }
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        if response.status_code == 200:
+            logging.info(f"✅ Document sent to {to_phone}")
+            return True
+        else:
+            logging.error(f"❌ Failed to send document: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Error sending document: {e}")
+        return False
+
+
+def mark_message_as_read(message_id):
+    """Mark a WhatsApp message as read"""
+    url = f"https://graph.facebook.com/v23.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id
+    }
+    
+    try:
+        requests.post(url, headers=headers, json=payload, timeout=10)
     except Exception as e:
         logging.error(f"Error marking message as read: {e}")
 
 
 # ===== GOOGLE SHEETS FUNCTIONS =====
-def verify_credentials():
-    """Verify Google API credentials and permissions"""
-    try:
-        # Check if credentials file exists
-        if not os.path.exists('credentials.json'):
-            logging.error("credentials.json file not found!")
-            return False
-            
-        # Verify calendar access
-        scopes = os.getenv('GOOGLE_SCOPES', '').split()
-        creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
-        calendar_service = build('calendar', 'v3', credentials=creds)
-        
-        # Try to access the calendar
-        calendar_id = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
-        calendar_service.calendars().get(calendarId=calendar_id).execute()
-        
-        logging.info("✅ Google Calendar access verified successfully!")
-        return True
-        
-    except Exception as e:
-        logging.error(f"❌ Error verifying credentials: {str(e)}")
-        return False
-
-def add_to_calendar(name, date_str, time_str, unit_type):
-    """Add a site visit to Google Calendar"""
-    try:
-        # First verify credentials
-        if not verify_credentials():
-            logging.error("Failed to verify Google credentials")
-            return False
-            
-        # Parse date and time
-        date_obj = datetime.strptime(date_str, "%d/%m/%Y")
-        time_obj = datetime.strptime(time_str, "%I:%M %p")
-        
-        # Combine date and time
-        start_time = date_obj.replace(
-            hour=time_obj.hour,
-            minute=time_obj.minute,
-            tzinfo=pytz.timezone('Asia/Kolkata')
-        )
-        
-        # Event ends after 1 hour
-        end_time = start_time + timedelta(hours=1)
-        
-        # Set up calendar service
-        scopes = os.getenv('GOOGLE_SCOPES', '').split()
-        calendar_id = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
-        
-        creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
-        service = build('calendar', 'v3', credentials=creds)
-        
-        event = {
-            'summary': f'Brookstone Site Visit - {name} ({unit_type})',
-            'location': 'Brookstone Show Flat, B/S, Vaikunth Bungalows, Next to Oxygen Park, DPS-Bopal Road, Shilaj, Ahmedabad - 380059',
-            'description': f'Site visit appointment for {name}\nUnit Interest: {unit_type}',
-            'start': {
-                'dateTime': start_time.isoformat(),
-                'timeZone': 'Asia/Kolkata',
-            },
-            'end': {
-                'dateTime': end_time.isoformat(),
-                'timeZone': 'Asia/Kolkata',
-            },
-            'reminders': {
-                'useDefault': True
-            }
-        }
-        
-        event = service.events().insert(calendarId=calendar_id, body=event).execute()
-        logging.info(f'Calendar event created: {event.get("htmlLink")}')
-        return True
-        
-    except Exception as e:
-        logging.error(f"Error creating calendar event: {e}")
-        return False
-
 def check_new_bookings():
     """Check for new entries in the Google Sheet and send confirmation messages"""
     try:
@@ -153,43 +155,56 @@ def check_new_bookings():
         
         for record in all_records:
             # Check if this is a new record that hasn't been processed
-            if record.get('Status') == 'New':
+            if not record.get('Status'):  # New form submissions won't have a status
                 phone = record.get('Phone')
                 name = record.get('Name')
                 date = record.get('Preferred Date')
                 time = record.get('Preferred Time')
                 unit = record.get('Unit Type')
+                budget = record.get('Budget')
                 
+                # Format phone number if needed
                 if phone:
-                    # Add to Google Calendar
-                    calendar_added = add_to_calendar(name, date, time, unit)
-                    
+                    # Remove any spaces, dashes or special characters
+                    phone = re.sub(r'[^0-9+]', '', phone)
+                    # Add +91 if not present and it's a 10-digit number
+                    if len(phone) == 10 and not phone.startswith('+'):
+                        phone = f"+91{phone}"
+                
+                if phone and name and date and time:
                     # Format the confirmation message
                     message = f"""🎉 *Site Visit Booking Confirmed!*
 
 Dear {name},
 
-Your site visit to Brookstone has been scheduled:
+Thank you for booking a site visit at Brookstone. Your appointment details:
+
 📅 Date: {date}
 ⏰ Time: {time}
 🏠 Unit Interest: {unit}
+💰 Budget Range: {budget}
 
 📍 *Location:*
 Brookstone Show Flat
 B/S, Vaikunth Bungalows, Next to Oxygen Park
 DPS-Bopal Road, Shilaj, Ahmedabad - 380059
 
-Our team will be ready to welcome you! 
+Our team will be ready to welcome you! Please carry a valid ID proof.
 
 Need to reschedule? Contact us at: +91 1234567890
 
-See you soon! 🌟"""
+Looking forward to showing you your future home! 🌟
+
+_Note: You'll receive a reminder message 1 day before your visit._"""
 
                     # Send WhatsApp confirmation
                     if send_whatsapp_text(phone, message):
                         # Update status to confirmed
-                        status = 'Confirmed' if calendar_added else 'Confirmed (Calendar Failed)'
-                        sheet.update_cell(all_records.index(record) + 2, 8, status)
+                        row_num = all_records.index(record) + 2  # +2 because sheet is 1-indexed and we have header row
+                        sheet.update_cell(row_num, sheet.find('Status').col, 'Confirmed')
+                        logging.info(f"✅ Site visit confirmed for {name} on {date} at {time}")
+                    else:
+                        sheet.update_cell(row_num, sheet.find('Status').col, 'Pending - WhatsApp Failed')
         
         return True
     
@@ -244,12 +259,44 @@ def extract_relevant_data(user_question, faq_data, language='english'):
             relevant_data['3bhk_unit_plan'] = lang_data['3bhk_unit_plan']
         if '4bhk_unit_plan' in lang_data:
             relevant_data['4bhk_unit_plan'] = lang_data['4bhk_unit_plan']
-
-    # Ground floor / floor plan queries
-    if any(word in user_question_lower for word in ['ground', 'ground floor', 'floor plan', 'groundfloor', 'ground-floor']):
-        if 'ground_floor_plan' in lang_data:
-            relevant_data['ground_floor_plan'] = lang_data['ground_floor_plan']
     
+    # Check for elevator related queries
+    if any(word in user_question_lower for word in ['elevator', 'lift']):
+        if 'elevator' in lang_data:
+            relevant_data['elevator'] = lang_data['elevator']
+
+    # Check for parking related queries
+    if any(word in user_question_lower for word in ['parking', 'car park', 'vehicle']):
+        if 'parking' in lang_data:
+            relevant_data['parking'] = lang_data['parking']
+
+    # Check for specifications from the image
+    if any(word in user_question_lower for word in ['structure', 'flooring', 'bathroom', 'kitchen', 'elevator', 'electrical', 'doors', 'windows', 'security', 'water', 'specifications', 'features']):
+        if 'specifications' in lang_data:
+            relevant_data['specifications'] = lang_data['specifications']
+
+    # Check for elevator related queries
+    if any(word in user_question_lower for word in ['elevator', 'lift', 'lifts']):
+        if 'construction_specifications' in lang_data and 'elevator' in lang_data['construction_specifications']:
+            relevant_data['elevator'] = lang_data['construction_specifications']['elevator']
+        if 'ground_floor_plan' in lang_data:
+            block_a_lifts = lang_data['ground_floor_plan']['block_a_zone'].get('lift_lobby', {})
+            block_b_lifts = lang_data['ground_floor_plan']['block_b_zone'].get('lift_lobby', {})
+            relevant_data['elevators_detail'] = {
+                'block_a': block_a_lifts,
+                'block_b': block_b_lifts
+            }
+
+    # Check for parking related queries
+    if any(word in user_question_lower for word in ['parking', 'car park', 'vehicle', 'cars']):
+        if 'parking' in lang_data:
+            relevant_data['parking'] = lang_data['parking']
+
+    # Check for specifications from the image
+    if any(word in user_question_lower for word in ['structure', 'flooring', 'bathroom', 'kitchen', 'electrical', 'doors', 'windows', 'security', 'water', 'specifications', 'features']):
+        if 'construction_specifications' in lang_data:
+            relevant_data['specifications'] = lang_data['construction_specifications']
+
     if any(word in user_question_lower for word in ['amenity', 'amenities', 'facility', 'gym', 'pool', 'park', 'club']):
         if 'amenities' in lang_data:
             relevant_data['amenities'] = lang_data['amenities']
@@ -477,9 +524,11 @@ The form will ask for:
 • Unit Type Interest
 • Budget Range
 
-Once you submit the form, our team will confirm your appointment within 2 hours.
+Once you submit the form, you will receive a confirmation message here on WhatsApp within 15 minutes.
 
-Need help with the form? Feel free to ask! 😊"""
+Need help with the form? Feel free to ask! 😊
+
+_Tip: Make sure to provide accurate contact details in the form as we'll send the confirmation on the same WhatsApp number._ 📱"""
         
         state['chat_history'].append((reply, False))
         return reply
@@ -758,9 +807,25 @@ def home():
     }), 200
 
 
+def check_bookings_periodically():
+    """Check for new bookings every 5 minutes"""
+    while True:
+        try:
+            check_new_bookings()
+            time.sleep(300)  # Sleep for 5 minutes
+        except Exception as e:
+            logging.error(f"Error in periodic booking check: {e}")
+            time.sleep(60)  # If error occurs, retry after 1 minute
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     logging.info(f"🚀 Starting Brookstone WhatsApp Bot on port {port}")
     logging.info(f"WhatsApp configured: {bool(WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID)}")
     logging.info(f"Gemini configured: {bool(GEMINI_API_KEY)}")
+    
+    # Start booking checker in a separate thread
+    import threading
+    booking_checker = threading.Thread(target=check_bookings_periodically, daemon=True)
+    booking_checker.start()
+    
     app.run(host='0.0.0.0', port=port, debug=False)
