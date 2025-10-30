@@ -381,10 +381,41 @@ def extract_relevant_data(user_question, faq_data, language='english'):
                     ]
                 }
 
-    # Check for various topics
-    if any(word in user_question_lower for word in ['price', 'cost', 'bhk', 'bedroom', 'size', 'sqft', 'configuration', 'apartment']):
+    # Check for unit configurations and sizes
+    if any(word in user_question_lower for word in ['3bhk', '3 bhk', 'price', 'cost', 'bhk', 'bedroom', 'size', 'sqft', 'configuration', 'apartment', 'flat', 'carpet', 'area', 'dimension']):
+        # Always include both configurations
         if 'unit_configurations' in lang_data:
-            relevant_data['unit_configurations'] = lang_data['unit_configurations']
+            configs = lang_data['unit_configurations']
+            relevant_data['unit_details'] = {
+                '3bhk': {
+                    'total_size': next((config['size_sqft'] for config in configs if config['type'] == '3BHK'), ''),
+                    'carpet_area': next((config['carpet_area'] for config in configs if config['type'] == '3BHK'), ''),
+                    'size_yard': next((config['size_sq_yard'] for config in configs if config['type'] == '3BHK'), ''),
+                    'price': next((config['price_cr'] for config in configs if config['type'] == '3BHK'), '')
+                },
+                '4bhk': {
+                    'total_size': next((config['size_sqft'] for config in configs if config['type'] == '4BHK'), ''),
+                    'carpet_area': next((config['carpet_area'] for config in configs if config['type'] == '4BHK'), ''),
+                    'size_yard': next((config['size_sq_yard'] for config in configs if config['type'] == '4BHK'), ''),
+                    'price': next((config['price_cr'] for config in configs if config['type'] == '4BHK'), '')
+                }
+            }
+        
+        # For detailed floor plans
+        if '3bhk_unit_plan' in lang_data and ('3bhk' in user_question_lower or '3 bhk' in user_question_lower or 'carpet' in user_question_lower):
+            relevant_data['3bhk_details'] = {
+                'overview': lang_data['3bhk_unit_plan']['overview'],
+                'special_features': lang_data['3bhk_unit_plan']['special_features'],
+                'area_breakdown': lang_data['3bhk_unit_plan']['area_breakdown']
+            }
+        
+        if '4bhk_unit_plan' in lang_data and ('4bhk' in user_question_lower or '4 bhk' in user_question_lower or 'carpet' in user_question_lower):
+            relevant_data['4bhk_details'] = {
+                'overview': lang_data['4bhk_unit_plan']['overview'],
+                'special_features': lang_data['4bhk_unit_plan']['special_features'],
+                'area_breakdown': lang_data['4bhk_unit_plan']['area_breakdown']
+            }
+        
         if 'pricing' in lang_data:
             relevant_data['pricing'] = lang_data['pricing']
     
@@ -470,7 +501,7 @@ def create_gemini_prompt(user_question, faq_data, language='english', chat_histo
             conversation_context += f"{role}: {msg}\n"
     
     prompt = f"""
-You are a helpful real estate chatbot for the Brookstone project. Answer user questions based on the provided project data and conversation context.
+You are a helpful real estate chatbot for the Brookstone project. Answer user questions based on the provided project data and conversation context. {"Use Gujarati language for responses." if language == 'gujarati' else "Use English language for responses."}
 
 PROJECT DATA:
 {json.dumps(relevant_data, indent=2)}{conversation_context}
@@ -480,22 +511,39 @@ USER QUESTION: {user_question}
 INSTRUCTIONS:
 1. ALWAYS use the PROJECT DATA provided above to answer questions
 2. Consider the RECENT CONVERSATION context - if user says "yes", "sure", "please", they are responding to your previous question
-3. If any detail shows "TBD", say "This detail is yet to be finalized"
+3. If any detail shows "TBD", say {"આ વિગત હજી નક્કી કરવાની બાકી છે" if language == 'gujarati' else "This detail is yet to be finalized"}
 4. Keep responses concise but comprehensive (max 1000 characters for WhatsApp)
-5. Possession is May 2027
+5. For possession date, mention {"મે 2027" if language == 'gujarati' else "May 2027"}
 6. After answering, ask 1 natural follow-up question to keep conversation going
 7. Be conversational and friendly like a real sales agent
 8. NEVER suggest WhatsApp links - only provide phone numbers
 9. For agent contact, ONLY provide phone number +91 1234567890
 10. Format your response for WhatsApp - use emojis and clear structure
+
 11. For ground floor questions:
     - Always mention specific dimensions when available
     - Describe the layout and connections between spaces
     - Include details about amenities and facilities
     - If size/dimension is asked but not available, acknowledge that and provide other relevant details
+
 12. When mentioning sizes or dimensions:
     - Use the exact measurements as provided in the data
     - Format dimensions clearly with proper units (e.g., "14'-9\" × 14'-6\"")
+    - For carpet area, specify it's carpet area (કાર્પેટ એરિયા in Gujarati)
+    - For total area, specify it's total built-up area (કુલ બિલ્ટ-અપ એરિયા in Gujarati)
+
+13. For BHK queries:
+    - Always mention both carpet area and total area
+    - Include price when available
+    - Specify number of bathrooms and balconies
+    - Mention key features of the layout
+    - If asking about 3BHK, provide 3BHK details first, then briefly mention 4BHK is also available
+    - If asking about 4BHK, provide 4BHK details first, then briefly mention 3BHK is also available
+
+14. Language-specific formatting:
+    - Use native number format for Gujarati (૧,૨,૩,૪,૫,૬,૭,૮,૯,૦)
+    - Use appropriate units: {'ચો.ફૂટ for sqft, કરોડ for crore' if language == 'gujarati' else 'sq ft for area, Cr for crore'}
+    - Use native terms for amenities and facilities when in Gujarati
 
 ANSWER:"""
     
@@ -648,16 +696,39 @@ Is there anything else about Brookstone I can help you with? 🏠"""
         return reply
     
     # ===== HANDLE SITE VISIT BOOKING =====
-    booking_keywords = ['book site visit', 'schedule visit', 'site visit', 'book appointment', 'visit booking']
+    booking_keywords_english = ['book site visit', 'schedule visit', 'site visit', 'book appointment', 'visit booking']
+    booking_keywords_gujarati = ['સાઇટ વિઝિટ', 'એપોઇન્ટમેન્ટ', 'વિઝિટ બુક', 'મુલાકાત', 'સાઇટ જોવા']
     
-    if any(kw in user_lower for kw in booking_keywords):
-        google_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSceds-nIr9vTLHJ0Jl1TOv0DNYGQhb0CtEa2R3mA9Ae3iP8Lg/viewform"
+    if any(kw in user_lower for kw in booking_keywords_english + booking_keywords_gujarati):
+        # Choose form URL based on detected language
+        english_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSceds-nIr9vTLHJ0Jl1TOv0DNYGQhb0CtEa2R3mA9Ae3iP8Lg/viewform"
+        gujarati_form_url = "https://docs.google.com/forms/d/e/1FAIpQLSdmWOyIDKZ5KU47LhzKUJXwITN40Fn8tV8swuX7IIWFvB72qQ/viewform"
         
-        reply = f"""🏠 *Book Your Site Visit to Brookstone*
+        if state['language'] == 'gujarati':
+            reply = f"""🏠 *બ્રૂકસ્ટોન સાઇટ વિઝિટ બુકિંગ*
+
+તમારી સાઇટ વિઝિટ શેડ્યૂલ કરવા માટે, નીચેની લિંક પર ક્લિક કરો અને ફોર્મ ભરો:
+
+📝 {gujarati_form_url}
+
+ફોર્મમાં આ માહિતી પૂછવામાં આવશે:
+• તમારું નામ
+• કોન્ટેક્ટ નંબર
+• પસંદગીની તારીખ અને સમય
+• યુનિટ પસંદગી
+• બજેટ રેન્જ
+
+ફોર્મ સબમિટ કર્યા પછી, તમને 15 મિનિટની અંદર WhatsApp પર કન્ફર્મેશન મેસેજ મળશે.
+
+ફોર્મ ભરવામાં કોઈ મદદ જોઈએ છે? પૂછવામાં સંકોચ ન કરશો! 😊
+
+_નોંધ: કૃપા કરીને ફોર્મમાં સાચો કોન્ટેક્ટ નંબર આપશો, કારણ કે અમે એ જ WhatsApp નંબર પર કન્ફર્મેશન મોકલીશું._ 📱"""
+        else:
+            reply = f"""🏠 *Book Your Site Visit to Brookstone*
 
 To schedule your site visit, please click the link below and fill out a quick form:
 
-📝 {google_form_url}
+📝 {english_form_url}
 
 The form will ask for:
 • Your Name
