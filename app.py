@@ -19,9 +19,6 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-
-# Google Sheets Configuration
-GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")  # Service account credentials JSON
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "brookstone_verify_token_2024")
 LEADS_SHEET_NAME = os.getenv("LEADS_SHEET_NAME", "Brookstone Leads")
 SITE_VISITS_SHEET_NAME = os.getenv("SITE_VISITS_SHEET_NAME", "Brookstone Site Visits")
@@ -143,35 +140,11 @@ def mark_message_as_read(message_id):
 
 
 # ===== GOOGLE SHEETS FUNCTIONS =====
-def get_google_creds():
-    """Get Google credentials from environment variables"""
-    try:
-        # Get the credentials JSON from environment variable
-        creds_json = os.getenv('GOOGLE_CREDENTIALS')
-        if not creds_json:
-            logging.error("GOOGLE_CREDENTIALS environment variable not set")
-            return None
-        
-        # Parse the JSON string into a dictionary
-        creds_dict = json.loads(creds_json)
-        
-        # Create credentials object
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        return creds
-    except Exception as e:
-        logging.error(f"Error creating Google credentials: {e}")
-        return None
-
 def check_new_bookings():
     """Check for new entries in the Google Sheet and send confirmation messages"""
     try:
-        # Get credentials from environment
-        creds = get_google_creds()
-        if not creds:
-            logging.error("Failed to get Google credentials")
-            return False
-        
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
         client = gspread.authorize(creds)
         
         # Open the site visits sheet
