@@ -274,6 +274,113 @@ def extract_relevant_data(user_question, faq_data, language='english'):
     if 'project_info' in lang_data:
         relevant_data['project_info'] = lang_data['project_info']
     
+    # Check for ground floor related queries
+    if any(word in user_question_lower for word in ['ground floor', 'ground level', 'ground', 'foyer', 'entrance', 'multipurpose', 'court', 'gym', 'library', 'toddler', 'society', 'seating', 'lift', 'stair', 'amenity', 'facility', 'drop']):
+        if 'ground_floor_plan' in lang_data:
+            # Add overall ground floor summary
+            relevant_data['ground_floor_summary'] = lang_data['ground_floor_plan'].get('summary', '')
+            relevant_data['ground_floor_overview'] = lang_data['ground_floor_plan'].get('site_overview', {})
+            
+            # Always include zone-specific details for comprehensive ground floor queries
+            block_a_zone = lang_data['ground_floor_plan'].get('block_a_zone', {})
+            block_b_zone = lang_data['ground_floor_plan'].get('block_b_zone', {})
+            central_zone = lang_data['ground_floor_plan'].get('central_amenities', {})
+            
+            # Right Side (Block A Zone) Details
+            if 'block a' in user_question_lower or any(word in user_question_lower for word in ['society', 'toddler', 'right side', 'security']):
+                relevant_data['block_a_zone'] = {
+                    'foyer': {
+                        'size': '14\'-9\" × 14\'-6\"',
+                        'function': 'Entry point into Block A',
+                        'features': 'Staircases (UP & DN) on both sides'
+                    },
+                    'lift_lobby': {
+                        'size': '8\'-5\" × 6\'-8\"',
+                        'lifts_count': '2 lifts'
+                    },
+                    'seating_space': {
+                        'size': '44\'-0\" × 21\'-7\"',
+                        'function': 'Large sitting lounge outside Block A'
+                    },
+                    'society_office': {
+                        'size': '10\'-3\" × 16\'-3\"',
+                        'location': 'Beside the seating lounge'
+                    },
+                    'store_society': {
+                        'size': '10\'-3\" × 5\'-0\"',
+                        'location': 'Near the Society Office'
+                    },
+                    'toddlers_space': {
+                        'size': '16\'-4\" × 15\'-9\"',
+                        'function': 'Play area for toddlers'
+                    },
+                    'store_toddlers': {
+                        'size': '11\'-0\" × 5\'-7\"',
+                        'location': 'Near the Toddler\'s Space'
+                    },
+                    'toilet_toddlers': {
+                        'size': '6\'-0\" × 6\'-7\"',
+                        'location': 'Near the Toddler\'s Space'
+                    },
+                    'other_utilities': {
+                        'security': 'Security Cabin with toilet at entry/exit gate',
+                        'meter_room': 'Dedicated space for electrical meters',
+                        'parking': 'Car parking spaces available',
+                        'drop_off': 'Kids drop-off area',
+                        'ramp': 'Basement ramp near Block A foyer',
+                        'water_feature': 'Decorative water body beside walkway'
+                    }
+                }
+            
+            # Left Side (Block B Zone) Details
+            if 'block b' in user_question_lower or any(word in user_question_lower for word in ['gym', 'library', 'left side']):
+                relevant_data['block_b_zone'] = {
+                    'foyer': {
+                        'size': '14\'-0\" × 19\'-6\"',
+                        'function': 'Entry point into Block B',
+                        'features': 'Staircases (UP & DN) on both sides'
+                    },
+                    'lift_lobby': {
+                        'size': '6\'-8\" × 8\'-0\"',
+                        'lifts_count': '2 lifts'
+                    },
+                    'gym': {
+                        'size': '17\'-9\" × 19\'-3\"',
+                        'function': 'Fitness and exercise area'
+                    },
+                    'library_lounge': {
+                        'size': '18\'-9\" × 26\'-5\"',
+                        'function': 'Library, Lounge, and Multi-Purpose Room'
+                    },
+                    'other_utilities': {
+                        'sand_pit': 'Children\'s play area',
+                        'postal': 'Dedicated space for postal services'
+                    }
+                }
+            
+            # Central Amenities Details
+            if any(word in user_question_lower for word in ['central', 'amenity', 'court', 'sand pit', 'lawn', 'facility', 'fountain']):
+                relevant_data['central_amenities'] = {
+                    'multipurpose_court': {
+                        'size': '40\'-8\" × 18\'-11\"',
+                        'location': 'Center of complex',
+                        'features': 'Surrounded by walkways'
+                    },
+                    'sand_pit': {
+                        'location': 'Adjacent to multipurpose court',
+                        'function': 'Children\'s play area'
+                    },
+                    'other_facilities': [
+                        'Internal Roads',
+                        'Drop-Off Plaza',
+                        'Lawn Area',
+                        'DG Set',
+                        'Seating Blocks',
+                        'Ramp Down to Basement',
+                        'Water Fountain with sculpture'
+                    ]
+                }
+
     # Check for various topics
     if any(word in user_question_lower for word in ['price', 'cost', 'bhk', 'bedroom', 'size', 'sqft', 'configuration', 'apartment']):
         if 'unit_configurations' in lang_data:
@@ -381,6 +488,14 @@ INSTRUCTIONS:
 8. NEVER suggest WhatsApp links - only provide phone numbers
 9. For agent contact, ONLY provide phone number +91 1234567890
 10. Format your response for WhatsApp - use emojis and clear structure
+11. For ground floor questions:
+    - Always mention specific dimensions when available
+    - Describe the layout and connections between spaces
+    - Include details about amenities and facilities
+    - If size/dimension is asked but not available, acknowledge that and provide other relevant details
+12. When mentioning sizes or dimensions:
+    - Use the exact measurements as provided in the data
+    - Format dimensions clearly with proper units (e.g., "14'-9\" × 14'-6\"")
 
 ANSWER:"""
     
