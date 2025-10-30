@@ -143,9 +143,38 @@ def mark_message_as_read(message_id):
 
 
 # ===== GOOGLE SHEETS FUNCTIONS =====
+def verify_credentials():
+    """Verify Google API credentials and permissions"""
+    try:
+        # Check if credentials file exists
+        if not os.path.exists('credentials.json'):
+            logging.error("credentials.json file not found!")
+            return False
+            
+        # Verify calendar access
+        scopes = os.getenv('GOOGLE_SCOPES', '').split()
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
+        calendar_service = build('calendar', 'v3', credentials=creds)
+        
+        # Try to access the calendar
+        calendar_id = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
+        calendar_service.calendars().get(calendarId=calendar_id).execute()
+        
+        logging.info("✅ Google Calendar access verified successfully!")
+        return True
+        
+    except Exception as e:
+        logging.error(f"❌ Error verifying credentials: {str(e)}")
+        return False
+
 def add_to_calendar(name, date_str, time_str, unit_type):
     """Add a site visit to Google Calendar"""
     try:
+        # First verify credentials
+        if not verify_credentials():
+            logging.error("Failed to verify Google credentials")
+            return False
+            
         # Parse date and time
         date_obj = datetime.strptime(date_str, "%d/%m/%Y")
         time_obj = datetime.strptime(time_str, "%I:%M %p")
@@ -161,7 +190,9 @@ def add_to_calendar(name, date_str, time_str, unit_type):
         end_time = start_time + timedelta(hours=1)
         
         # Set up calendar service
-        scopes = ['https://www.googleapis.com/auth/calendar']
+        scopes = os.getenv('GOOGLE_SCOPES', '').split()
+        calendar_id = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
+        
         creds = Credentials.from_service_account_file('credentials.json', scopes=scopes)
         service = build('calendar', 'v3', credentials=creds)
         
@@ -182,7 +213,7 @@ def add_to_calendar(name, date_str, time_str, unit_type):
             }
         }
         
-        event = service.events().insert(calendarId='primary', body=event).execute()
+        event = service.events().insert(calendarId=calendar_id, body=event).execute()
         logging.info(f'Calendar event created: {event.get("htmlLink")}')
         return True
         
